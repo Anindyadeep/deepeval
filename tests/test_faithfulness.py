@@ -1,7 +1,11 @@
 import pytest
+from deepeval.metrics.faithfulness.schema import Verdicts
 from deepeval.test_case import LLMTestCase
 from deepeval.metrics import FaithfulnessMetric
 from deepeval import assert_test
+from deepeval.models import DeepEvalBaseLLM
+from langchain_openai import ChatOpenAI
+from tests.custom_judge import CustomJudge
 
 output = """
 The primary difference between a comet and an asteroid lies in their 
@@ -38,6 +42,26 @@ planets, mostly located in the asteroid belt.
 """
 
 
+class OpenAI(DeepEvalBaseLLM):
+    def __init__(self, model="gpt-3.5-turbo"):
+        self.model = model
+
+    def load_model(self):
+        return ChatOpenAI(model_name=self.model)
+
+    def generate(self, prompt: str) -> str:
+        chat_model = self.load_model()
+        return chat_model.invoke(prompt).content
+
+    async def a_generate(self, prompt: str) -> str:
+        chat_model = self.load_model()
+        res = await chat_model.ainvoke(prompt)
+        return res.content
+
+    def get_model_name(self):
+        return "Custom Model"
+
+
 @pytest.mark.skip(reason="openai is expensive")
 def test_faithfulness():
     test_case = LLMTestCase(
@@ -45,5 +69,17 @@ def test_faithfulness():
         actual_output=output,
         retrieval_context=[one, two, three],
     )
-    metric = FaithfulnessMetric()
+    model = OpenAI()
+    metric = FaithfulnessMetric(model=model)
     assert_test(test_case, [metric])
+
+
+def test_verdict_schema():
+
+    judge = CustomJudge("mock")
+    schema = Verdicts
+    answer = (
+        '{\n"verdicts": [\n{\n"verdict": "yes"\n},\n{\n    "verdict": "no",\n    "reason": "blah blah"\n},'
+        '\n{\n    "verdict": "yes",\n    "reason":null \n}\n]\n}'
+    )
+    res: Verdicts = judge.generate(answer, schema=schema)

@@ -1,22 +1,31 @@
 from typing import Optional, List, Union
-from pydantic import BaseModel, Field
-from threading import Lock
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
 
-from deepeval.utils import trimAndLoadJson
-from deepeval.test_case import LLMTestCase
+from deepeval.utils import get_or_create_event_loop, prettify_list
+from deepeval.metrics.utils import (
+    construct_verbose_logs,
+    trimAndLoadJson,
+    check_llm_test_case_params,
+    initialize_model,
+)
+from deepeval.test_case import (
+    LLMTestCase,
+    LLMTestCaseParams,
+    ConversationalTestCase,
+)
 from deepeval.metrics import BaseMetric
-from deepeval.models import GPTModel, DeepEvalBaseLLM
+from deepeval.models import DeepEvalBaseLLM
 from deepeval.metrics.contextual_relevancy.template import (
     ContextualRelevancyTemplate,
 )
-from deepeval.progress_context import metrics_progress_context
-from deepeval.telemetry import capture_metric_type
+from deepeval.metrics.indicator import metric_progress_indicator
+from deepeval.metrics.contextual_relevancy.schema import *
 
-
-class ContextualRelevancyVerdict(BaseModel):
-    verdict: str
-    sentence: str = Field(default=None)
+required_params: List[LLMTestCaseParams] = [
+    LLMTestCaseParams.INPUT,
+    LLMTestCaseParams.ACTUAL_OUTPUT,
+    LLMTestCaseParams.RETRIEVAL_CONTEXT,
+]
 
 
 class ContextualRelevancyMetric(BaseMetric):
@@ -25,140 +34,221 @@ class ContextualRelevancyMetric(BaseMetric):
         threshold: float = 0.5,
         model: Optional[Union[str, DeepEvalBaseLLM]] = None,
         include_reason: bool = True,
-        multithreading: bool = True,
+        async_mode: bool = True,
+        strict_mode: bool = False,
+        verbose_mode: bool = False,
     ):
-        self.threshold = threshold
-        if isinstance(model, DeepEvalBaseLLM):
-            self.model = model
-        else:
-            self.model = GPTModel(model=model)
+        self.threshold = 1 if strict_mode else threshold
+        self.model, self.using_native_model = initialize_model(model)
         self.evaluation_model = self.model.get_model_name()
         self.include_reason = include_reason
-        self.multithreading = multithreading
+        self.async_mode = async_mode
+        self.strict_mode = strict_mode
+        self.verbose_mode = verbose_mode
 
-    def measure(self, test_case: LLMTestCase) -> float:
-        if (
-            test_case.input is None
-            or test_case.actual_output is None
-            or test_case.retrieval_context is None
+    def measure(
+        self,
+        test_case: Union[LLMTestCase, ConversationalTestCase],
+        _show_indicator: bool = True,
+    ) -> float:
+        if isinstance(test_case, ConversationalTestCase):
+            test_case = test_case.turns[0]
+        check_llm_test_case_params(test_case, required_params, self)
+
+        self.evaluation_cost = 0 if self.using_native_model else None
+        with metric_progress_indicator(self, _show_indicator=_show_indicator):
+            if self.async_mode:
+                loop = get_or_create_event_loop()
+                loop.run_until_complete(
+                    self.a_measure(test_case, _show_indicator=False)
+                )
+            else:
+                self.verdicts_list: List[ContextualRelevancyVerdicts] = [
+                    (self._generate_verdicts(test_case.input, context))
+                    for context in test_case.retrieval_context
+                ]
+                self.score = self._calculate_score()
+                self.reason = self._generate_reason(test_case.input)
+                self.success = self.score >= self.threshold
+                self.verbose_logs = construct_verbose_logs(
+                    self,
+                    steps=[
+                        f"Verdicts:\n{prettify_list(self.verdicts_list)}",
+                        f"Score: {self.score}\nReason: {self.reason}",
+                    ],
+                )
+
+                return self.score
+
+    async def a_measure(
+        self,
+        test_case: Union[LLMTestCase, ConversationalTestCase],
+        _show_indicator: bool = True,
+    ) -> float:
+        if isinstance(test_case, ConversationalTestCase):
+            test_case = test_case.turns[0]
+        check_llm_test_case_params(test_case, required_params, self)
+
+        self.evaluation_cost = 0 if self.using_native_model else None
+        with metric_progress_indicator(
+            self,
+            async_mode=True,
+            _show_indicator=_show_indicator,
         ):
-            raise ValueError(
-                "Input, actual output, or retrieval context cannot be None"
-            )
-        with metrics_progress_context(self.__name__, self.evaluation_model):
-            self.verdicts_list: List[List[ContextualRelevancyVerdict]] = (
-                self._generate_verdicts_list(
-                    test_case.input, test_case.retrieval_context
+            self.verdicts_list: List[ContextualRelevancyVerdicts] = (
+                await asyncio.gather(
+                    *[
+                        self._a_generate_verdicts(test_case.input, context)
+                        for context in test_case.retrieval_context
+                    ]
                 )
             )
-            contextual_recall_score = self._generate_score()
-
-            self.reason = self._generate_reason(
-                test_case.input, contextual_recall_score
+            self.score = self._calculate_score()
+            self.reason = await self._a_generate_reason(test_case.input)
+            self.success = self.score >= self.threshold
+            self.verbose_logs = construct_verbose_logs(
+                self,
+                steps=[
+                    f"Verdicts:\n{prettify_list(self.verdicts_list)}",
+                    f"Score: {self.score}\nReason: {self.reason}",
+                ],
             )
 
-            self.success = contextual_recall_score >= self.threshold
-            self.score = contextual_recall_score
-            capture_metric_type(self.__name__)
             return self.score
 
-    def _generate_reason(self, input: str, score: float):
+    async def _a_generate_reason(self, input: str):
         if self.include_reason is False:
             return None
 
-        irrelevant_sentences = []
-        for index, verdicts in enumerate(self.verdicts_list):
-            for verdict in verdicts:
-                if verdict.verdict.strip().lower() == "no":
-                    data = {"Node": index + 1, "Sentence": verdict.sentence}
-                    irrelevant_sentences.append(data)
+        irrelevancies = []
+        relevant_statements = []
+        for verdicts in self.verdicts_list:
+            for verdict in verdicts.verdicts:
+                if verdict.verdict.lower() == "no":
+                    irrelevancies.append(verdict.reason)
+                else:
+                    relevant_statements.append(verdict.statement)
 
         prompt: dict = ContextualRelevancyTemplate.generate_reason(
             input=input,
-            irrelevant_sentences=irrelevant_sentences,
-            score=format(score, ".2f"),
+            irrelevancies=irrelevancies,
+            relevant_statements=relevant_statements,
+            score=format(self.score, ".2f"),
         )
+        if self.using_native_model:
+            res, cost = await self.model.a_generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["reason"]
+        else:
+            try:
+                res: Reason = await self.model.a_generate(prompt, schema=Reason)
+                return res.reason
+            except TypeError:
+                res = await self.model.a_generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["reason"]
 
-        res = self.model(prompt)
-        return res
+    def _generate_reason(self, input: str):
+        if self.include_reason is False:
+            return None
 
-    def _generate_score(self):
-        irrelevant_sentences = 0
-        total_sentence_count = 0
+        irrelevancies = []
+        relevant_statements = []
         for verdicts in self.verdicts_list:
-            for verdict in verdicts:
-                total_sentence_count += 1
+            for verdict in verdicts.verdicts:
                 if verdict.verdict.lower() == "no":
-                    irrelevant_sentences += 1
+                    irrelevancies.append(verdict.reason)
+                else:
+                    relevant_statements.append(verdict.statement)
 
-        if total_sentence_count == 0:
+        prompt: dict = ContextualRelevancyTemplate.generate_reason(
+            input=input,
+            irrelevancies=irrelevancies,
+            relevant_statements=relevant_statements,
+            score=format(self.score, ".2f"),
+        )
+        if self.using_native_model:
+            res, cost = self.model.generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["reason"]
+        else:
+            try:
+                res: Reason = self.model.generate(prompt, schema=Reason)
+                return res.reason
+            except TypeError:
+                res = self.model.generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["reason"]
+
+    def _calculate_score(self):
+        total_verdicts = 0
+        relevant_statements = 0
+        for verdicts in self.verdicts_list:
+            for verdict in verdicts.verdicts:
+                total_verdicts += 1
+                if verdict.verdict.lower() == "yes":
+                    relevant_statements += 1
+
+        if total_verdicts == 0:
             return 0
 
-        return (
-            total_sentence_count - irrelevant_sentences
-        ) / total_sentence_count
+        score = relevant_statements / total_verdicts
+        return 0 if self.strict_mode and score < self.threshold else score
+
+    async def _a_generate_verdicts(
+        self, input: str, context: List[str]
+    ) -> ContextualRelevancyVerdicts:
+        prompt = ContextualRelevancyTemplate.generate_verdicts(
+            input=input, context=context
+        )
+        if self.using_native_model:
+            res, cost = await self.model.a_generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return ContextualRelevancyVerdicts(**data)
+        else:
+            try:
+                res = await self.model.a_generate(
+                    prompt, schema=ContextualRelevancyVerdicts
+                )
+                return res
+            except TypeError:
+                res = await self.model.a_generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return ContextualRelevancyVerdicts(**data)
 
     def _generate_verdicts(
-        self,
-        text: str,
-        context: str,
-        verdicts_list: List[List[ContextualRelevancyVerdict]],
-        lock: Lock,
-    ):
+        self, input: str, context: str
+    ) -> ContextualRelevancyVerdicts:
         prompt = ContextualRelevancyTemplate.generate_verdicts(
-            text=text, context=context
+            input=input, context=context
         )
-
-        res = self.model(prompt)
-        data = trimAndLoadJson(res)
-        verdicts = [
-            ContextualRelevancyVerdict(**item) for item in data["verdicts"]
-        ]
-
-        with lock:
-            verdicts_list.append(verdicts)
-
-    def _generate_verdicts_list(
-        self, text: str, retrieval_context: List[str]
-    ) -> List[List[ContextualRelevancyVerdict]]:
-        verdicts_list: List[List[ContextualRelevancyVerdict]] = []
-
-        if self.multithreading:
-            lock = Lock()
-
-            with ThreadPoolExecutor() as executor:
-                futures = {
-                    executor.submit(
-                        self._generate_verdicts,
-                        text,
-                        context,
-                        verdicts_list,
-                        lock,
-                    ): context
-                    for context in retrieval_context
-                }
-
-                for future in as_completed(futures):
-                    future.result()
-
+        if self.using_native_model:
+            res, cost = self.model.generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return ContextualRelevancyVerdicts(**data)
         else:
-            for context in retrieval_context:
-                prompt = ContextualRelevancyTemplate.generate_verdicts(
-                    text=text, context=context
+            try:
+                res = self.model.generate(
+                    prompt, schema=ContextualRelevancyVerdicts
                 )
-
-                res = self.model(prompt)
-                data = trimAndLoadJson(res)
-                verdicts = [
-                    ContextualRelevancyVerdict(**item)
-                    for item in data["verdicts"]
-                ]
-                verdicts_list.append(verdicts)
-
-        return verdicts_list
+                return res
+            except TypeError:
+                res = self.model.generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return ContextualRelevancyVerdicts(**data)
 
     def is_successful(self) -> bool:
-        self.success = self.score >= self.threshold
+        if self.error is not None:
+            self.success = False
+        else:
+            try:
+                self.success = self.score >= self.threshold
+            except:
+                self.success = False
         return self.success
 
     @property

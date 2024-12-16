@@ -3,6 +3,10 @@
 </p>
 
 <p align="center">
+    <h1 align="center">The LLM Evaluation Framework</h1>
+</p>
+
+<p align="center">
     <a href="https://discord.com/invite/a3K9c8GRGt">
         <img alt="discord-invite" src="https://dcbadge.vercel.app/api/server/a3K9c8GRGt?style=flat">
     </a>
@@ -10,11 +14,11 @@
 
 <h4 align="center">
     <p>
-        <a href="https://docs.confident-ai.com/docs/getting-started">Documentation</a> |
+        <a href="https://docs.confident-ai.com/docs/getting-started?utm_source=GitHub">Documentation</a> |
         <a href="#-metrics-and-features">Metrics and Features</a> |
         <a href="#-quickstart">Getting Started</a> |
         <a href="#-integrations">Integrations</a> |
-        <a href="https://confident-ai.com">Confident AI</a>
+        <a href="https://confident-ai.com?utm_source=GitHub">Confident AI</a>
     <p>
 </h4>
 
@@ -30,7 +34,7 @@
     </a>
 </p>
 
-**DeepEval** is a simple-to-use, open-source LLM evaluation framework. It is similar to Pytest but specialized for unit testing LLM outputs. DeepEval incorporates the latest research to evaluate LLM outputs based on metrics such as hallucination, answer relevancy, RAGAS, etc., which uses LLMs and various other NLP models that runs **locally on your machine** for evaluation.
+**DeepEval** is a simple-to-use, open-source LLM evaluation framework, for evaluating and testing large-language model systems. It is similar to Pytest but specialized for unit testing LLM outputs. DeepEval incorporates the latest research to evaluate LLM outputs based on metrics such as G-Eval, hallucination, answer relevancy, RAGAS, etc., which uses LLMs and various other NLP models that runs **locally on your machine** for evaluation.
 
 Whether your application is implemented via RAG or fine-tuning, LangChain or LlamaIndex, DeepEval has you covered. With it, you can easily determine the optimal hyperparameters to improve your RAG pipeline, prevent prompt drifting, or even transition from OpenAI to hosting your own Llama2 with confidence.
 
@@ -40,7 +44,9 @@ Whether your application is implemented via RAG or fine-tuning, LangChain or Lla
 
 # 🔥 Metrics and Features
 
-- Large variety of ready-to-use LLM evaluation metrics powered by LLMs (all with explanations), statistical methods, or NLP models that runs **locally on your machine**:
+> ‼️ You can now run DeepEval's metrics on the cloud for free directly on [Confident AI](https://confident-ai.com?utm_source=GitHub)'s infrastructure 🥳
+
+- Large variety of ready-to-use LLM evaluation metrics (all with explanations) powered by **ANY** LLM of your choice, statistical methods, or NLP models that runs **locally on your machine**:
   - G-Eval
   - Summarization
   - Answer Relevancy
@@ -49,12 +55,24 @@ Whether your application is implemented via RAG or fine-tuning, LangChain or Lla
   - Contextual Precision
   - RAGAS
   - Hallucination
+  - etc.
+- [Red team your LLM application](https://docs.confident-ai.com/docs/red-teaming-introduction) for 40+ safety vulnerabilities in a few lines of code, including:
   - Toxicity
   - Bias
-  - etc. 
+  - SQL Injection
+  - etc., using advanced 10+ attack enhancement strategies such as prompt injections.
 - Evaluate your entire dataset in bulk in under 20 lines of Python code **in parallel**. Do this via the CLI in a Pytest-like manner, or through our `evaluate()` function.
-- Easily create your own custom metrics that are automatically integrated with DeepEval's ecosystem by inheriting DeepEval's base metric class.
-- [Automatically integrated with Confident AI](https://app.confident-ai.com) for continous evaluation throughout the lifetime of your LLM (app):
+- Create your own custom metrics that are automatically integrated with DeepEval's ecosystem by inheriting DeepEval's base metric class.
+- Integrates seamlessly with **ANY** CI/CD environment.
+- Easily benchmark **ANY** LLM on popular LLM benchmarks in [under 10 lines of code.](https://docs.confident-ai.com/docs/benchmarks-introduction?utm_source=GitHub), which includes:
+  - MMLU
+  - HellaSwag
+  - DROP
+  - BIG-Bench Hard
+  - TruthfulQA
+  - HumanEval
+  - GSM8K
+- [Automatically integrated with Confident AI](https://app.confident-ai.com?utm_source=GitHub) for continous evaluation throughout the lifetime of your LLM (app):
   - log evaluation results and analyze metrics pass / fails
   - compare and pick the optimal hyperparameters (eg. prompt templates, chunk size, models used, etc.) based on evaluation results
   - debug evaluation results via LLM traces
@@ -69,8 +87,8 @@ Whether your application is implemented via RAG or fine-tuning, LangChain or Lla
 
 # 🔌 Integrations
 
-- 🦄 LlamaIndex, to [**unit test RAG applications in CI/CD**](https://docs.confident-ai.com/docs/integrations-llamaindex)
-- 🤗 Hugging Face, to [**enable real-time evaluations during LLM fine-tuning**](https://docs.confident-ai.com/docs/integrations-huggingface)
+- 🦄 LlamaIndex, to [**unit test RAG applications in CI/CD**](https://docs.confident-ai.com/docs/integrations-llamaindex?utm_source=GitHub)
+- 🤗 Hugging Face, to [**enable real-time evaluations during LLM fine-tuning**](https://docs.confident-ai.com/docs/integrations-huggingface?utm_source=GitHub)
 
 <br />
 
@@ -94,7 +112,7 @@ To login, run:
 deepeval login
 ```
 
-Follow the instructions in the CLI to create an account, copy your API key, and paste it into the CLI. All test cases will automatically be logged (find more information on data privacy [here](https://docs.confident-ai.com/docs/data-privacy)).
+Follow the instructions in the CLI to create an account, copy your API key, and paste it into the CLI. All test cases will automatically be logged (find more information on data privacy [here](https://docs.confident-ai.com/docs/data-privacy?utm_source=GitHub)).
 
 ## Writing your first test case
 
@@ -122,7 +140,7 @@ def test_case():
     )
     assert_test(test_case, [answer_relevancy_metric])
 ```
-Set your `OPENAI_API_KEY` as an environment variable (you can also evaluate using your own custom model, for more details visit [this part of our docs](https://docs.confident-ai.com/docs/metrics-introduction#using-a-custom-llm)):
+Set your `OPENAI_API_KEY` as an environment variable (you can also evaluate using your own custom model, for more details visit [this part of our docs](https://docs.confident-ai.com/docs/metrics-introduction#using-a-custom-llm?utm_source=GitHub)):
 
 ```
 export OPENAI_API_KEY="..."
@@ -140,7 +158,7 @@ deepeval test run test_chatbot.py
 - The variable `retrieval_context` contains the relevant information from your knowledge base, and `AnswerRelevancyMetric(threshold=0.5)` is an out-of-the-box metric provided by DeepEval. It helps evaluate the relevancy of your LLM output based on the provided context.
 - The metric score ranges from 0 - 1. The `threshold=0.5` threshold ultimately determines whether your test has passed or not.
 
-[Read our documentation](https://docs.confident-ai.com/docs/getting-started) for more information on how to use additional metrics, create your own custom metrics, and tutorials on how to integrate with other tools like LangChain and LlamaIndex.
+[Read our documentation](https://docs.confident-ai.com/docs/getting-started?utm_source=GitHub) for more information on how to use additional metrics, create your own custom metrics, and tutorials on how to integrate with other tools like LangChain and LlamaIndex.
 
 <br />
 
@@ -187,7 +205,7 @@ print(answer_relevancy_metric.reason)
 
 Note that some metrics are for RAG pipelines, while others are for fine-tuning. Make sure to use our docs to pick the right one for your use case.
 
-## Evaluting a Dataset / Test Cases in Bulk
+## Evaluating a Dataset / Test Cases in Bulk
 
 In DeepEval, a dataset is simply a collection of test cases. Here is how you can evaluate these in bulk:
 
@@ -233,7 +251,7 @@ dataset.evaluate([answer_relevancy_metric])
 
 # Real-time Evaluations on Confident AI
 
-We offer a [free web platform](https://app.confident-ai.com) for you to:
+We offer a [web platform](https://app.confident-ai.com?utm_source=Github) for you to:
 
 1. Log and view all the test results / metrics data from DeepEval's test runs.
 2. Debug evaluation results via LLM traces.
@@ -242,7 +260,7 @@ We offer a [free web platform](https://app.confident-ai.com) for you to:
 5. Track events in production and augment your evaluation dataset for continous evaluation.
 6. Track events in production, view evaluation results and historical insights.
 
-Everything on Confident AI, including how to use Confident is available [here](https://docs.confident-ai.com/docs/confident-ai-introduction).
+Everything on Confident AI, including how to use Confident is available [here](https://docs.confident-ai.com/docs/confident-ai-introduction?utm_source=GitHub).
 
 To begin, login from the CLI:
 

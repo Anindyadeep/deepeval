@@ -1,13 +1,16 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
-from deepeval.dataset.golden import Golden
+from deepeval.dataset.golden import Golden, ConversationalGolden
 
 
 class APIDataset(BaseModel):
     alias: str
-    overwrite: bool
-    goldens: Optional[List[Golden]] = Field(default=None)
+    overwrite: Optional[bool] = None
+    goldens: Optional[List[Golden]] = Field(default=[])
+    conversational_goldens: Optional[List[ConversationalGolden]] = Field(
+        default=[], alias="conversationalGoldens"
+    )
 
 
 class CreateDatasetHttpResponse(BaseModel):
@@ -15,4 +18,8 @@ class CreateDatasetHttpResponse(BaseModel):
 
 
 class DatasetHttpResponse(BaseModel):
-    goldens: List[Golden]
+    goldens: List[Golden] = Field(alias="goldens")
+    conversational_goldens: List[ConversationalGolden] = Field(
+        alias="conversationalGoldens"
+    )
+    datasetId: str

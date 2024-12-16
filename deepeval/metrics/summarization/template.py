@@ -1,14 +1,16 @@
 class SummarizationTemplate:
     @staticmethod
     def generate_reason(contradictions, redundancies, questions, score):
-        return f"""You will be given the following: 1) information in the summary contradicting the original text, 2) extra information in the summary not mentioned in the original text, 3) [Optional] quesetions cannot be answered by the summary. Your task is to explain the quality of this summarization task.
+        return f"""You will be given the following: 1) information in the summary contradicting the original text, 2) extra information in the summary not mentioned in the original text, 3) [Optional] questions cannot be answered by the summary. Your task is to explain the quality of this summarization task.
 Given the summarization score, which is a 0-1 score indicating how good the summary is to the original text (higher the better), CONCISELY summarize the provided information to justify the score.  
 
-Example Reason:
-The score is <summarization_score> because <your_reason>.
+** 
+IMPORTANT: Please make sure to only return in JSON format, with the 'reason' key providing the reason.
+Example JSON:
+{{
+    "reason": "The score is <summarization_score> because <your_reason>."
+}}
 
-**
-IMPORTANT: 
 For 'None' values in contradictions, extra information, or questions that the original text can answer but not the summary, DON'T mention anything and instead offer some praise.
 Be sure in your reason, as if you know what the summary and original text is.
 **
@@ -16,13 +18,11 @@ Be sure in your reason, as if you know what the summary and original text is.
 Summarization Score:
 {score}
 
-Contradicting Information in the orignial text:
+Contradicting Information in the original text:
 {contradictions}
 
 Extra Information not mentioned in the original text:
 {redundancies}
-
-Reason:
 """
 
     @staticmethod

@@ -1,9 +1,10 @@
 """An implementation of the Ragas metric
 """
 
-from typing import Optional, Union, Any
+from typing import Optional, Union, Any, List
 from langchain_core.language_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
+from enum import Enum
 
 from deepeval.metrics import BaseMetric
 from deepeval.test_case import LLMTestCase
@@ -15,6 +16,11 @@ def format_ragas_metric_name(name: str):
     return f"{name} (ragas)"
 
 
+#############################################################
+# Context Precision
+#############################################################
+
+
 class RAGASContextualPrecisionMetric(BaseMetric):
     """This metric checks the contextual precision using Ragas"""
 
@@ -22,14 +28,17 @@ class RAGASContextualPrecisionMetric(BaseMetric):
         self,
         threshold: float = 0.3,
         model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
+        _track: bool = True,
     ):
         self.threshold = threshold
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
+        self.model = model
+        self._track = _track
+        if isinstance(model, str):
+            self.evaluation_model = model
 
     def measure(self, test_case: LLMTestCase):
-        # sends to server
         try:
+            import_ragas()
             from ragas import evaluate
             from ragas.metrics import context_precision
 
@@ -44,26 +53,35 @@ class RAGASContextualPrecisionMetric(BaseMetric):
             raise ModuleNotFoundError("Please install dataset")
 
         # Set LLM model
-        chat_model = self.model.load_model()
+        if isinstance(self.model, str):
+            chat_model = GPTModel(model=self.model).load_model()
+        else:
+            chat_model = self.model
 
         # Create a dataset from the test case
         data = {
             "contexts": [test_case.retrieval_context],
             "question": [test_case.input],
             "ground_truth": [test_case.expected_output],
-            "id": [[test_case.id]],
         }
         dataset = Dataset.from_dict(data)
 
-        # Evaluate the dataset using Ragas
-        scores = evaluate(dataset, metrics=[context_precision], llm=chat_model)
+        with capture_metric_type(self.__name__, _track=self._track):
+            # Evaluate the dataset using Ragas
+            scores = evaluate(
+                dataset, metrics=[context_precision], llm=chat_model
+            )
 
-        # Ragas only does dataset-level comparisons
-        context_precision_score = scores["context_precision"]
-        self.success = context_precision_score >= self.threshold
-        self.score = context_precision_score
-        capture_metric_type(self.__name__)
-        return self.score
+            # Ragas only does dataset-level comparisons
+            context_precision_score = scores["context_precision"][0]
+            self.success = context_precision_score >= self.threshold
+            self.score = context_precision_score
+            return self.score
+
+    async def a_measure(
+        self, test_case: LLMTestCase, _show_indicator: bool = False
+    ):
+        return self.measure(test_case)
 
     def is_successful(self):
         return self.success
@@ -73,171 +91,9 @@ class RAGASContextualPrecisionMetric(BaseMetric):
         return format_ragas_metric_name("Contextual Precision")
 
 
-class RAGASContextualRelevancyMetric(BaseMetric):
-    """This metric checks the contextual relevancy using Ragas"""
-
-    def __init__(
-        self,
-        threshold: float = 0.3,
-        model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
-    ):
-        self.threshold = threshold
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
-
-    def measure(self, test_case: LLMTestCase):
-        # sends to server
-        try:
-            from ragas import evaluate
-            from ragas.metrics import context_relevancy
-
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError(
-                "Please install ragas to use this metric. `pip install ragas`."
-            )
-
-        try:
-            from datasets import Dataset
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError("Please install dataset")
-
-        # Set LLM model
-        chat_model = self.model.load_model()
-
-        # Create a dataset from the test case
-        data = {
-            "contexts": [test_case.retrieval_context],
-            "question": [test_case.input],
-            "id": [[test_case.id]],
-        }
-        dataset = Dataset.from_dict(data)
-
-        # Evaluate the dataset using Ragas
-        scores = evaluate(dataset, metrics=[context_relevancy], llm=chat_model)
-
-        # Ragas only does dataset-level comparisons
-        context_relevancy_score = scores["context_relevancy"]
-        self.success = context_relevancy_score >= self.threshold
-        self.score = context_relevancy_score
-        capture_metric_type(self.__name__)
-        return self.score
-
-    def is_successful(self):
-        return self.success
-
-    @property
-    def __name__(self):
-        return format_ragas_metric_name("Contextual Relevancy")
-
-
-class RAGASAnswerRelevancyMetric(BaseMetric):
-    """This metric checks the answer relevancy using Ragas"""
-
-    def __init__(
-        self,
-        threshold: float = 0.3,
-        model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
-        embeddings: Optional[Embeddings] = None,
-    ):
-        self.threshold = threshold
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
-        self.embeddings = embeddings
-
-    def measure(self, test_case: LLMTestCase):
-        # sends to server
-        try:
-            from ragas import evaluate
-            from ragas.metrics import answer_relevancy
-
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError(
-                "Please install ragas to use this metric. `pip install ragas`."
-            )
-
-        try:
-            from datasets import Dataset
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError("Please install dataset")
-
-        # Set LLM model
-        chat_model = self.model.load_model()
-
-        data = {
-            "question": [test_case.input],
-            "answer": [test_case.actual_output],
-            "contexts": [test_case.retrieval_context],
-            "id": [[test_case.id]],
-        }
-        dataset = Dataset.from_dict(data)
-        scores = evaluate(
-            dataset,
-            metrics=[answer_relevancy],
-            llm=chat_model,
-            embeddings=self.embeddings,
-        )
-        answer_relevancy_score = scores["answer_relevancy"]
-        self.success = answer_relevancy_score >= self.threshold
-        self.score = answer_relevancy_score
-        capture_metric_type(self.__name__)
-        return self.score
-
-    def is_successful(self):
-        return self.success
-
-    @property
-    def __name__(self):
-        return format_ragas_metric_name("Answer Relevancy")
-
-
-class RAGASFaithfulnessMetric(BaseMetric):
-    def __init__(
-        self,
-        threshold: float = 0.3,
-        model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
-    ):
-        self.threshold = threshold
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
-
-    def measure(self, test_case: LLMTestCase):
-        # sends to server
-        try:
-            from ragas import evaluate
-            from ragas.metrics import faithfulness
-
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError(
-                "Please install ragas to use this metric. `pip install ragas`."
-            )
-
-        try:
-            from datasets import Dataset
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError("Please install dataset")
-
-        # Set LLM model
-        chat_model = self.model.load_model()
-        data = {
-            "contexts": [test_case.retrieval_context],
-            "question": [test_case.input],
-            "answer": [test_case.actual_output],
-            "id": [[test_case.id]],
-        }
-        dataset = Dataset.from_dict(data)
-        scores = evaluate(dataset, metrics=[faithfulness], llm=chat_model)
-        faithfulness_score = scores["faithfulness"]
-        self.success = faithfulness_score >= self.threshold
-        self.score = faithfulness_score
-        capture_metric_type(self.__name__)
-        return self.score
-
-    def is_successful(self):
-        return self.success
-
-    @property
-    def __name__(self):
-        return format_ragas_metric_name("Faithfulness")
+#############################################################
+# Context Recall
+#############################################################
 
 
 class RAGASContextualRecallMetric(BaseMetric):
@@ -247,10 +103,18 @@ class RAGASContextualRecallMetric(BaseMetric):
         self,
         threshold: float = 0.3,
         model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
+        _track: bool = True,
     ):
         self.threshold = threshold
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
+        self.model = model
+        self._track = _track
+        if isinstance(model, str):
+            self.evaluation_model = model
+
+    async def a_measure(
+        self, test_case: LLMTestCase, _show_indicator: bool = False
+    ):
+        return self.measure(test_case)
 
     def measure(self, test_case: LLMTestCase):
         # sends to server
@@ -269,21 +133,23 @@ class RAGASContextualRecallMetric(BaseMetric):
             raise ModuleNotFoundError("Please install dataset")
 
         # Set LLM model
-        chat_model = self.model.load_model()
+        if isinstance(self.model, str):
+            chat_model = GPTModel(model=self.model).load_model()
+        else:
+            chat_model = self.model
 
         data = {
             "question": [test_case.input],
             "ground_truth": [test_case.expected_output],
             "contexts": [test_case.retrieval_context],
-            "id": [[test_case.id]],
         }
         dataset = Dataset.from_dict(data)
-        scores = evaluate(dataset, [context_recall], llm=chat_model)
-        context_recall_score = scores["context_recall"]
-        self.success = context_recall_score >= self.threshold
-        self.score = context_recall_score
-        capture_metric_type(self.__name__)
-        return self.score
+        with capture_metric_type(self.__name__, _track=self._track):
+            scores = evaluate(dataset, [context_recall], llm=chat_model)
+            context_recall_score = scores["context_recall"][0]
+            self.success = context_recall_score >= self.threshold
+            self.score = context_recall_score
+            return self.score
 
     def is_successful(self):
         return self.success
@@ -293,23 +159,37 @@ class RAGASContextualRecallMetric(BaseMetric):
         return format_ragas_metric_name("Contextual Recall")
 
 
-class HarmfulnessMetric(BaseMetric):
-    """This metric checks the harmfulness using Ragas"""
+#############################################################
+# Context Entities Recall
+#############################################################
+
+
+class RAGASContextualEntitiesRecall(BaseMetric):
+    """This metric checks the context entities recall using Ragas"""
 
     def __init__(
         self,
         threshold: float = 0.3,
         model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
+        _track: bool = True,
     ):
         self.threshold = threshold
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
+        self.model = model
+        self._track = _track
+        if isinstance(model, str):
+            self.evaluation_model = model
+
+    async def a_measure(
+        self, test_case: LLMTestCase, _show_indicator: bool = False
+    ):
+        return self.measure(test_case)
 
     def measure(self, test_case: LLMTestCase):
         # sends to server
         try:
+            import_ragas()
             from ragas import evaluate
-            from ragas.metrics.critique import harmfulness
+            from ragas.metrics import ContextEntityRecall
 
         except ModuleNotFoundError:
             raise ModuleNotFoundError(
@@ -322,47 +202,142 @@ class HarmfulnessMetric(BaseMetric):
             raise ModuleNotFoundError("Please install dataset")
 
         # Set LLM model
-        chat_model = self.model.load_model()
+        if isinstance(self.model, str):
+            chat_model = GPTModel(model=self.model).load_model()
+        else:
+            chat_model = self.model
 
         data = {
             "ground_truth": [test_case.expected_output],
-            "contexts": [test_case.context],
-            "question": [test_case.input],
-            "answer": [test_case.actual_output],
-            "id": [[test_case.id]],
+            "contexts": [test_case.retrieval_context],
         }
         dataset = Dataset.from_dict(data)
-        scores = evaluate(dataset, [harmfulness], llm=chat_model)
-        harmfulness_score = scores["harmfulness"]
-        self.success = harmfulness_score >= self.threshold
-        self.score = harmfulness_score
-        capture_metric_type(self.__name__)
-        return self.score
+
+        with capture_metric_type(self.__name__, _track=self._track):
+            scores = evaluate(
+                dataset,
+                metrics=[ContextEntityRecall()],
+                llm=chat_model,
+            )
+            contextual_entity_score = scores["context_entity_recall"][0]
+            self.success = contextual_entity_score >= self.threshold
+            self.score = contextual_entity_score
+            return self.score
 
     def is_successful(self):
         return self.success
 
     @property
     def __name__(self):
-        return "Harmfulness"
+        return format_ragas_metric_name("Contextual Entities Recall")
 
 
-class CoherenceMetric(BaseMetric):
-    """This metric checks the coherence using Ragas"""
+#############################################################
+# Noise Sensitivity
+#############################################################
+
+# class RAGASNoiseSensitivityMetric(BaseMetric):
+#     """This metric checks the noise sentivity using Ragas"""
+
+#     def __init__(
+#         self,
+#         threshold: float = 0.3,
+#         model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
+#         _track: bool = True,
+#     ):
+#         self.threshold = threshold
+#         self.model = model
+#         self._track = _track
+#         if isinstance(model, str):
+#             self.evaluation_model = model
+
+#     async def a_measure(self, test_case: LLMTestCase, _show_indicator: bool = False):
+#         return self.measure(test_case)
+
+#     def measure(self, test_case: LLMTestCase):
+#         # sends to server
+#         try:
+#             import_ragas()
+#             from ragas import evaluate
+#             from ragas.metrics import NoiseSensitivity
+
+#         except ModuleNotFoundError:
+#             raise ModuleNotFoundError(
+#                 "Please install ragas to use this metric. `pip install ragas`."
+#             )
+
+#         try:
+#             from datasets import Dataset
+#         except ModuleNotFoundError:
+#             raise ModuleNotFoundError("Please install dataset")
+
+#         # Set LLM model
+#         if isinstance(self.model, str):
+#             chat_model = GPTModel(model=self.model).load_model()
+#         else:
+#             chat_model = self.model
+
+#         data = {
+#             "question": [test_case.input],
+#             "answer": [test_case.actual_output],
+#             "ground_truth": [test_case.expected_output],
+#             "contexts": [test_case.retrieval_context],
+#         }
+#         dataset = Dataset.from_dict(data)
+
+#         with capture_metric_type(self.__name__, _track=self._track):
+#             scores = evaluate(
+#                 dataset,
+#                 metrics=[NoiseSensitivity()],
+#                 llm=chat_model,
+#             )
+#             noise_sensitivty_score = scores["noise_sensitivity_relevant"][0]
+#             self.success = noise_sensitivty_score >= self.threshold
+#             self.score = noise_sensitivty_score
+#             return self.score
+
+#     def is_successful(self):
+#         return self.success
+
+#     @property
+#     def __name__(self):
+#         return format_ragas_metric_name("Noise Sensitivity")
+
+
+#############################################################
+# Response Relevancy
+#############################################################
+
+
+class RAGASAnswerRelevancyMetric(BaseMetric):
+    """This metric checks the answer relevancy using Ragas"""
 
     def __init__(
         self,
         threshold: float = 0.3,
         model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
+        embeddings: Optional[Embeddings] = None,
+        _track: bool = True,
     ):
         self.threshold = threshold
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
+        self.model = model
+        self._track = _track
+        if isinstance(model, str):
+            self.evaluation_model = model
+        self.embeddings = embeddings
+
+    async def a_measure(
+        self, test_case: LLMTestCase, _show_indicator: bool = False
+    ):
+        return self.measure(test_case)
 
     def measure(self, test_case: LLMTestCase):
+        # sends to server
         try:
+            import_ragas()
             from ragas import evaluate
-            from ragas.metrics.critique import coherence
+            from ragas.metrics import ResponseRelevancy
+
         except ModuleNotFoundError:
             raise ModuleNotFoundError(
                 "Please install ragas to use this metric. `pip install ragas`."
@@ -374,47 +349,67 @@ class CoherenceMetric(BaseMetric):
             raise ModuleNotFoundError("Please install dataset")
 
         # Set LLM model
-        chat_model = self.model.load_model()
+        if isinstance(self.model, str):
+            chat_model = GPTModel(model=self.model).load_model()
+        else:
+            chat_model = self.model
 
         data = {
-            "ground_truth": [test_case.expected_output],
-            "contexts": [test_case.context],
             "question": [test_case.input],
             "answer": [test_case.actual_output],
-            "id": [[test_case.id]],
+            "contexts": [test_case.retrieval_context],
         }
         dataset = Dataset.from_dict(data)
-        scores = evaluate(dataset, [coherence], llm=chat_model)
-        coherence_score = scores["coherence"]
-        self.success = coherence_score >= self.threshold
-        self.score = coherence_score
-        capture_metric_type(self.__name__)
-        return self.score
+
+        with capture_metric_type(self.__name__, _track=self._track):
+            scores = evaluate(
+                dataset,
+                metrics=[ResponseRelevancy(embeddings=self.embeddings)],
+                llm=chat_model,
+                embeddings=self.embeddings,
+            )
+            answer_relevancy_score = scores["answer_relevancy"][0]
+            self.success = answer_relevancy_score >= self.threshold
+            self.score = answer_relevancy_score
+            return self.score
 
     def is_successful(self):
         return self.success
 
     @property
     def __name__(self):
-        return "Coherence"
+        return format_ragas_metric_name("Answer Relevancy")
 
 
-class MaliciousnessMetric(BaseMetric):
-    """This metric checks the maliciousness using Ragas"""
+#############################################################
+# Faithfulness
+#############################################################
 
+
+class RAGASFaithfulnessMetric(BaseMetric):
     def __init__(
         self,
         threshold: float = 0.3,
         model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
+        _track: bool = True,
     ):
         self.threshold = threshold
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
+        self.model = model
+        self._track = _track
+        if isinstance(model, str):
+            self.evaluation_model = model
+
+    async def a_measure(
+        self, test_case: LLMTestCase, _show_indicator: bool = False
+    ):
+        return self.measure(test_case)
 
     def measure(self, test_case: LLMTestCase):
+        # sends to server
         try:
+            import_ragas()
             from ragas import evaluate
-            from ragas.metrics.critique import maliciousness
+            from ragas.metrics import faithfulness
 
         except ModuleNotFoundError:
             raise ModuleNotFoundError(
@@ -427,134 +422,35 @@ class MaliciousnessMetric(BaseMetric):
             raise ModuleNotFoundError("Please install dataset")
 
         # Set LLM model
-        chat_model = self.model.load_model()
+        if isinstance(self.model, str):
+            chat_model = GPTModel(model=self.model).load_model()
+        else:
+            chat_model = self.model
 
         data = {
-            "ground_truth": [test_case.expected_output],
-            "contexts": [test_case.context],
+            "contexts": [test_case.retrieval_context],
             "question": [test_case.input],
             "answer": [test_case.actual_output],
-            "id": [[test_case.id]],
         }
         dataset = Dataset.from_dict(data)
-        scores = evaluate(dataset, [maliciousness], llm=chat_model)
-        maliciousness_score = scores["maliciousness"]
-        self.success = maliciousness_score >= self.threshold
-        self.score = maliciousness_score
-        capture_metric_type(self.__name__)
-        return self.score
+        with capture_metric_type(self.__name__, _track=self._track):
+            scores = evaluate(dataset, metrics=[faithfulness], llm=chat_model)
+            faithfulness_score = scores["faithfulness"][0]
+            self.success = faithfulness_score >= self.threshold
+            self.score = faithfulness_score
+            return self.score
 
     def is_successful(self):
         return self.success
 
     @property
     def __name__(self):
-        return "Maliciousness"
+        return format_ragas_metric_name("Faithfulness")
 
 
-class CorrectnessMetric(BaseMetric):
-    """This metric checks the correctness using Ragas"""
-
-    def __init__(
-        self,
-        threshold: float = 0.3,
-        model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
-    ):
-        self.threshold = threshold
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
-
-    def measure(self, test_case: LLMTestCase):
-        try:
-            from ragas import evaluate
-            from ragas.metrics.critique import correctness
-
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError(
-                "Please install ragas to use this metric. `pip install ragas`."
-            )
-
-        try:
-            from datasets import Dataset
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError("Please install dataset")
-
-        # Set LLM model
-        chat_model = self.model.load_model()
-
-        data = {
-            "ground_truth": [test_case.expected_output],
-            "contexts": [test_case.context],
-            "question": [test_case.input],
-            "answer": [test_case.actual_output],
-            "id": [[test_case.id]],
-        }
-        dataset = Dataset.from_dict(data)
-        scores = evaluate(dataset, metrics=[correctness], llm=chat_model)
-        correctness_score = scores["correctness"]
-        self.success = correctness_score >= self.threshold
-        self.score = correctness_score
-        capture_metric_type(self.__name__)
-        return self.score
-
-    def is_successful(self):
-        return self.success
-
-    @property
-    def __name__(self):
-        return "Correctness"
-
-
-class ConcisenessMetric(BaseMetric):
-    """This metric checks the conciseness using Ragas"""
-
-    def __init__(
-        self,
-        threshold: float = 0.3,
-        model: Optional[Union[str, BaseChatModel]] = "gpt-3.5-turbo",
-    ):
-        self.threshold = threshold
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
-
-    def measure(self, test_case: LLMTestCase):
-        try:
-            from ragas import evaluate
-            from ragas.metrics.critique import conciseness
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError(
-                "Please install ragas to use this metric. `pip install ragas`."
-            )
-
-        try:
-            from datasets import Dataset
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError("Please install dataset")
-
-        # Set LLM model
-        chat_model = self.model.load_model()
-
-        data = {
-            "ground_truth": [test_case.expected_output],
-            "contexts": [test_case.context],
-            "question": [test_case.input],
-            "answer": [test_case.actual_output],
-            "id": [[test_case.id]],
-        }
-        dataset = Dataset.from_dict(data)
-        scores = evaluate(dataset, metrics=[conciseness], llm=chat_model)
-        conciseness_score = scores["conciseness"]
-        self.success = conciseness_score >= self.threshold
-        self.score = conciseness_score
-        capture_metric_type(self.__name__)
-        return self.score
-
-    def is_successful(self):
-        return self.success
-
-    @property
-    def __name__(self):
-        return "Conciseness"
+#############################################################
+# RAGAS Metric
+#############################################################
 
 
 class RagasMetric(BaseMetric):
@@ -567,10 +463,15 @@ class RagasMetric(BaseMetric):
         embeddings: Optional[Embeddings] = None,
     ):
         self.threshold = threshold
-        self.model_name = model
-        self.model = GPTModel(model=model)
-        self.evaluation_model = self.model.get_model_name()
+        self.model = model
+        if isinstance(model, str):
+            self.evaluation_model = model
         self.embeddings = embeddings
+
+    async def a_measure(
+        self, test_case: LLMTestCase, _show_indicator: bool = False
+    ):
+        return self.measure(test_case)
 
     def measure(self, test_case: LLMTestCase):
         # sends to server
@@ -590,26 +491,27 @@ class RagasMetric(BaseMetric):
         # Create a dataset from the test case
         # Convert the LLMTestCase to a format compatible with Dataset
         score_breakdown = {}
-        metrics = [
-            RAGASContextualPrecisionMetric(model=self.model_name),
-            RAGASContextualRecallMetric(model=self.model_name),
-            RAGASFaithfulnessMetric(model=self.model_name),
+        metrics: List[BaseMetric] = [
+            RAGASContextualPrecisionMetric(model=self.model, _track=False),
+            RAGASContextualRecallMetric(model=self.model, _track=False),
+            RAGASContextualEntitiesRecall(model=self.model, _track=False),
             RAGASAnswerRelevancyMetric(
-                model=self.model_name, embeddings=self.embeddings
+                model=self.model, embeddings=self.embeddings, _track=False
             ),
+            RAGASFaithfulnessMetric(model=self.model, _track=False),
         ]
 
-        for metric in metrics:
-            score = metric.measure(test_case)
-            score_breakdown[metric.__name__] = score
+        with capture_metric_type(self.__name__):
+            for metric in metrics:
+                score = metric.measure(test_case)
+                score_breakdown[metric.__name__] = score
 
-        ragas_score = sum(score_breakdown.values()) / len(score_breakdown)
+            ragas_score = sum(score_breakdown.values()) / len(score_breakdown)
 
-        self.success = ragas_score >= self.threshold
-        self.score = ragas_score
-        self.score_breakdown = score_breakdown
-        capture_metric_type(self.__name__)
-        return self.score
+            self.success = ragas_score >= self.threshold
+            self.score = ragas_score
+            self.score_breakdown = score_breakdown
+            return self.score
 
     def is_successful(self):
         return self.success
@@ -617,3 +519,16 @@ class RagasMetric(BaseMetric):
     @property
     def __name__(self):
         return "RAGAS"
+
+
+def import_ragas():
+    import ragas
+
+    required_version = "0.2.1"
+    if not hasattr(ragas, "__version__"):
+        raise ImportError("Version information is not available for ragas.")
+    installed_version = ragas.__version__
+    if installed_version < required_version:
+        raise ImportError(
+            f"ragas version {required_version} or higher is required, but {installed_version} is installed."
+        )

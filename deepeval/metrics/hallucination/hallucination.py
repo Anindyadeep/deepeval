@@ -1,20 +1,28 @@
 from typing import Optional, Union, List
-from threading import Lock
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from pydantic import BaseModel, Field
 
-from deepeval.test_case import LLMTestCase
+from deepeval.test_case import (
+    LLMTestCase,
+    LLMTestCaseParams,
+    ConversationalTestCase,
+)
 from deepeval.metrics import BaseMetric
-from deepeval.utils import trimAndLoadJson
+from deepeval.utils import get_or_create_event_loop, prettify_list
+from deepeval.metrics.utils import (
+    construct_verbose_logs,
+    trimAndLoadJson,
+    check_llm_test_case_params,
+    initialize_model,
+)
 from deepeval.metrics.hallucination.template import HallucinationTemplate
-from deepeval.models import GPTModel, DeepEvalBaseLLM
-from deepeval.progress_context import metrics_progress_context
-from deepeval.telemetry import capture_metric_type
+from deepeval.models import DeepEvalBaseLLM
+from deepeval.metrics.indicator import metric_progress_indicator
+from deepeval.metrics.hallucination.schema import *
 
-
-class HallucinationVerdict(BaseModel):
-    verdict: str
-    reason: str = Field(default=None)
+required_params: List[LLMTestCaseParams] = [
+    LLMTestCaseParams.INPUT,
+    LLMTestCaseParams.ACTUAL_OUTPUT,
+    LLMTestCaseParams.CONTEXT,
+]
 
 
 class HallucinationMetric(BaseMetric):
@@ -23,43 +31,92 @@ class HallucinationMetric(BaseMetric):
         threshold: float = 0.5,
         model: Optional[Union[str, DeepEvalBaseLLM]] = None,
         include_reason: bool = True,
-        multithreading: bool = True,
+        async_mode: bool = False,
+        strict_mode: bool = False,
+        verbose_mode: bool = False,
     ):
-        self.threshold = threshold
-        if isinstance(model, DeepEvalBaseLLM):
-            self.model = model
-        else:
-            self.model = GPTModel(model=model)
+        self.threshold = 0 if strict_mode else threshold
+        self.model, self.using_native_model = initialize_model(model)
         self.evaluation_model = self.model.get_model_name()
         self.include_reason = include_reason
-        self.multithreading = multithreading
+        self.async_mode = async_mode
+        self.strict_mode = strict_mode
+        self.verbose_mode = verbose_mode
 
-    def measure(self, test_case: LLMTestCase):
-        if (
-            test_case.input is None
-            or test_case.actual_output is None
-            or test_case.context is None
+    def measure(
+        self,
+        test_case: Union[LLMTestCase, ConversationalTestCase],
+        _show_indicator: bool = True,
+    ) -> float:
+        if isinstance(test_case, ConversationalTestCase):
+            test_case = test_case.turns[0]
+        check_llm_test_case_params(test_case, required_params, self)
+
+        self.evaluation_cost = 0 if self.using_native_model else None
+        with metric_progress_indicator(self, _show_indicator=_show_indicator):
+            if self.async_mode:
+                loop = get_or_create_event_loop()
+                loop.run_until_complete(
+                    self.a_measure(test_case, _show_indicator=False)
+                )
+            else:
+                self.verdicts: List[HallucinationVerdict] = (
+                    self._generate_verdicts(
+                        test_case.actual_output, test_case.context
+                    )
+                )
+                self.score = self._calculate_score()
+                self.reason = self._generate_reason()
+                self.success = self.score <= self.threshold
+                self.verbose_logs = construct_verbose_logs(
+                    self,
+                    steps=[
+                        f"Verdicts:\n{prettify_list(self.verdicts)}",
+                        f"Score: {self.score}\nReason: {self.reason}",
+                    ],
+                )
+
+                return self.score
+
+    async def a_measure(
+        self,
+        test_case: Union[LLMTestCase, ConversationalTestCase],
+        _show_indicator: bool = True,
+    ) -> float:
+        if isinstance(test_case, ConversationalTestCase):
+            test_case = test_case.turns[0]
+        check_llm_test_case_params(test_case, required_params, self)
+
+        self.evaluation_cost = 0 if self.using_native_model else None
+        with metric_progress_indicator(
+            self, async_mode=True, _show_indicator=_show_indicator
         ):
-            raise ValueError("Input, actual output, or context cannot be None")
-        with metrics_progress_context(self.__name__, self.evaluation_model):
-            self.verdicts: List[HallucinationVerdict] = self._generate_verdicts(
-                test_case.actual_output, test_case.context
+            self.verdicts: List[HallucinationVerdict] = (
+                await self._a_generate_verdicts(
+                    test_case.actual_output, test_case.context
+                )
             )
-            hallucination_score = self._generate_score()
-            self.reason = self._generate_reason(hallucination_score)
-            self.success = hallucination_score <= self.threshold
-            self.score = hallucination_score
-            capture_metric_type(self.__name__)
+            self.score = self._calculate_score()
+            self.reason = await self._a_generate_reason()
+            self.success = self.score <= self.threshold
+            self.verbose_logs = construct_verbose_logs(
+                self,
+                steps=[
+                    f"Verdicts:\n{prettify_list(self.verdicts)}",
+                    f"Score: {self.score}\nReason: {self.reason}",
+                ],
+            )
+
             return self.score
 
-    def _generate_reason(self, score):
+    async def _a_generate_reason(self):
         if self.include_reason is False:
             return None
 
         factual_alignments = []
         contradictions = []
         for verdict in self.verdicts:
-            if verdict.verdict.strip().lower() == "no":
+            if verdict.verdict.strip().lower() == "yes":
                 factual_alignments.append(verdict.reason)
             else:
                 contradictions.append(verdict.reason)
@@ -67,84 +124,134 @@ class HallucinationMetric(BaseMetric):
         prompt: dict = HallucinationTemplate.generate_reason(
             factual_alignments=factual_alignments,
             contradictions=contradictions,
-            score=format(score, ".2f"),
+            score=format(self.score, ".2f"),
         )
 
-        res = self.model(prompt)
-        return res
+        if self.using_native_model:
+            res, cost = await self.model.a_generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["reason"]
+        else:
+            try:
+                res: Reason = await self.model.a_generate(prompt, schema=Reason)
+                return res.reason
+            except TypeError:
+                res = await self.model.a_generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["reason"]
 
-    def _generate_score(self) -> float:
-        total = len(self.verdicts)
-        hallucination_count = 0
-        if total == 0:
-            return 0
+    def _generate_reason(self):
+        if self.include_reason is False:
+            return None
 
+        factual_alignments = []
+        contradictions = []
         for verdict in self.verdicts:
-            if verdict.verdict.strip().lower() == "no":
-                hallucination_count += 1
+            if verdict.verdict.strip().lower() == "yes":
+                factual_alignments.append(verdict.reason)
+            else:
+                contradictions.append(verdict.reason)
 
-        return hallucination_count / total
+        prompt: dict = HallucinationTemplate.generate_reason(
+            factual_alignments=factual_alignments,
+            contradictions=contradictions,
+            score=format(self.score, ".2f"),
+        )
+
+        if self.using_native_model:
+            res, cost = self.model.generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["reason"]
+        else:
+            try:
+                res: Reason = self.model.generate(prompt, schema=Reason)
+                return res.reason
+            except TypeError:
+                res = self.model.generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["reason"]
+
+    async def _a_generate_verdicts(
+        self, actual_output: str, contexts: List[str]
+    ) -> List[HallucinationVerdict]:
+        verdicts: List[HallucinationVerdict] = []
+        prompt = HallucinationTemplate.generate_verdicts(
+            actual_output=actual_output, contexts=contexts
+        )
+        if self.using_native_model:
+            res, cost = await self.model.a_generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            verdicts = [
+                HallucinationVerdict(**item) for item in data["verdicts"]
+            ]
+            return verdicts
+        else:
+            try:
+                res: Verdicts = await self.model.a_generate(
+                    prompt, schema=Verdicts
+                )
+                verdicts = [item for item in res.verdicts]
+                return verdicts
+            except TypeError:
+                res = await self.model.a_generate(prompt)
+                data = trimAndLoadJson(res, self)
+                verdicts = [
+                    HallucinationVerdict(**item) for item in data["verdicts"]
+                ]
+                return verdicts
 
     def _generate_verdicts(
         self, actual_output: str, contexts: List[str]
     ) -> List[HallucinationVerdict]:
         verdicts: List[HallucinationVerdict] = []
-
-        if self.multithreading:
-            lock = Lock()
-            with ThreadPoolExecutor() as executor:
-                futures = {
-                    executor.submit(
-                        self._generate_verdict,
-                        actual_output,
-                        context,
-                        verdicts,
-                        lock,
-                    ): context
-                    for context in contexts
-                }
-
-                for future in as_completed(futures):
-                    future.result()
-        else:
-            prompt = HallucinationTemplate.generate_verdicts(
-                actual_output=actual_output, contexts=contexts
-            )
-            res = self.model(prompt)
-            data = trimAndLoadJson(res)
+        prompt = HallucinationTemplate.generate_verdicts(
+            actual_output=actual_output, contexts=contexts
+        )
+        if self.using_native_model:
+            res, cost = self.model.generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
             verdicts = [
                 HallucinationVerdict(**item) for item in data["verdicts"]
             ]
+            return verdicts
+        else:
+            try:
+                res: Verdicts = self.model.generate(prompt, schema=Verdicts)
+                verdicts = [item for item in res.verdicts]
+                return verdicts
+            except TypeError:
+                res = self.model.generate(prompt)
+                data = trimAndLoadJson(res, self)
+                verdicts = [
+                    HallucinationVerdict(**item) for item in data["verdicts"]
+                ]
+                return verdicts
 
-        return verdicts
+    def _calculate_score(self) -> float:
+        number_of_verdicts = len(self.verdicts)
+        if number_of_verdicts == 0:
+            return 0
 
-    def _generate_verdict(
-        self,
-        actual_output: str,
-        context: str,
-        verdicts: List[HallucinationVerdict],
-        lock: Lock,
-    ) -> HallucinationVerdict:
-        #######################################
-        ### Generate verdicts for [context] ###
-        #######################################
-        prompt = HallucinationTemplate.generate_verdicts(
-            actual_output=actual_output, contexts=[context]
-        )
-        res = self.model(prompt)
-        data = trimAndLoadJson(res)
+        hallucination_count = 0
+        for verdict in self.verdicts:
+            if verdict.verdict.strip().lower() == "no":
+                hallucination_count += 1
 
-        # verdicts length will always be 1
-        final_verdicts = [
-            HallucinationVerdict(**item) for item in data["verdicts"]
-        ]
-
-        with lock:
-            for final_verdict in final_verdicts:
-                verdicts.append(final_verdict)
+        score = hallucination_count / number_of_verdicts
+        return 1 if self.strict_mode and score > self.threshold else score
 
     def is_successful(self) -> bool:
-        self.success = self.score <= self.threshold
+        if self.error is not None:
+            self.success = False
+        else:
+            try:
+                self.success = self.score <= self.threshold
+            except:
+                self.success = False
         return self.success
 
     @property

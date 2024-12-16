@@ -1,33 +1,30 @@
 from typing import List, Optional, Union
-from enum import Enum
-from pydantic import BaseModel, Field
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
 
-from deepeval.test_case import LLMTestCase
+from deepeval.test_case import (
+    LLMTestCase,
+    LLMTestCaseParams,
+    ConversationalTestCase,
+)
 from deepeval.metrics import BaseMetric
-from deepeval.models import GPTModel, DeepEvalBaseLLM
-from deepeval.utils import trimAndLoadJson
+from deepeval.models import DeepEvalBaseLLM
+from deepeval.utils import get_or_create_event_loop, prettify_list
+from deepeval.metrics.utils import (
+    construct_verbose_logs,
+    trimAndLoadJson,
+    check_llm_test_case_params,
+    initialize_model,
+)
 from deepeval.metrics.summarization.template import SummarizationTemplate
 from deepeval.metrics.faithfulness.template import FaithfulnessTemplate
-from deepeval.progress_context import metrics_progress_context
-from deepeval.telemetry import capture_metric_type
+from deepeval.metrics.indicator import metric_progress_indicator
+from deepeval.metrics.summarization.schema import *
+from deepeval.metrics.faithfulness.schema import *
 
-
-class SummarizationAlignmentVerdict(BaseModel):
-    # yes, no, or idk
-    verdict: str
-    reason: str = Field(default=None)
-
-
-class SummarizationCoverageVerdict(BaseModel):
-    summary_verdict: str
-    original_verdict: str
-    question: str = Field(default=None)
-
-
-class ScoreType(Enum):
-    ALIGNMENT = "Alignment"
-    COVERAGE = "Coverage"
+required_params: List[LLMTestCaseParams] = [
+    LLMTestCaseParams.INPUT,
+    LLMTestCaseParams.ACTUAL_OUTPUT,
+]
 
 
 class SummarizationMetric(BaseMetric):
@@ -38,13 +35,13 @@ class SummarizationMetric(BaseMetric):
         model: Optional[Union[str, DeepEvalBaseLLM]] = None,
         assessment_questions: Optional[List[str]] = None,
         include_reason: bool = True,
-        multithreading=True,
+        async_mode=True,
+        strict_mode: bool = False,
+        verbose_mode: bool = False,
+        truths_extraction_limit: Optional[int] = None,
     ):
-        self.threshold = threshold
-        if isinstance(model, DeepEvalBaseLLM):
-            self.model = model
-        else:
-            self.model = GPTModel(model=model)
+        self.threshold = 1 if strict_mode else threshold
+        self.model, self.using_native_model = initialize_model(model)
         self.evaluation_model = self.model.get_model_name()
 
         if assessment_questions is not None and len(assessment_questions) == 0:
@@ -52,66 +49,116 @@ class SummarizationMetric(BaseMetric):
         else:
             self.assessment_questions = assessment_questions
 
-        self.multithreading = multithreading
         self.include_reason = include_reason
         self.n = n
+        self.async_mode = async_mode
+        self.strict_mode = strict_mode
+        self.verbose_mode = verbose_mode
 
-    def measure(self, test_case: LLMTestCase):
-        if test_case.input is None or test_case.actual_output is None:
-            raise ValueError("Input or actual output cannot be None")
+        self.truths_extraction_limit = truths_extraction_limit
+        if self.truths_extraction_limit is not None:
+            self.truths_extraction_limit = max(self.truths_extraction_limit, 0)
 
-        with metrics_progress_context(self.__name__, self.evaluation_model):
-            if test_case.input is None or test_case.actual_output is None:
-                raise ValueError("Input and actual output cannot be None")
+    def measure(
+        self,
+        test_case: Union[LLMTestCase, ConversationalTestCase],
+        _show_indicator: bool = True,
+    ) -> float:
+        if isinstance(test_case, ConversationalTestCase):
+            test_case = test_case.turns[0]
+        check_llm_test_case_params(test_case, required_params, self)
 
-            if self.multithreading:
-                # Use multithreading to generate truths and claims in parallel
-                with ThreadPoolExecutor() as executor:
-                    future_truths = executor.submit(
-                        # Claims made in the original text === truths
-                        self._generate_claims,
-                        test_case.input,
-                    )
-                    future_claims = executor.submit(
-                        self._generate_claims, test_case.actual_output
-                    )
-                    future_coverage_verdicts = executor.submit(
-                        self._generate_coverage_verdicts, test_case
-                    )
-
-                    self.truths: List[str] = future_truths.result()
-                    self.claims: List[str] = future_claims.result()
-                    self.coverage_verdicts: List[
-                        SummarizationCoverageVerdict
-                    ] = future_coverage_verdicts.result()
+        self.evaluation_cost = 0 if self.using_native_model else None
+        with metric_progress_indicator(self, _show_indicator=_show_indicator):
+            if self.async_mode:
+                loop = get_or_create_event_loop()
+                loop.run_until_complete(
+                    self.a_measure(test_case, _show_indicator=False)
+                )
             else:
-                # Sequential execution
-                self.truths: List[str] = self._generate_claims(test_case.input)
+                self.truths: List[str] = self._generate_truths(test_case.input)
                 self.claims: List[str] = self._generate_claims(
                     test_case.actual_output
                 )
                 self.coverage_verdicts: List[SummarizationCoverageVerdict] = (
                     self._generate_coverage_verdicts(test_case)
                 )
+                self.alignment_verdicts: List[SummarizationAlignmentVerdict] = (
+                    self._generate_alignment_verdicts()
+                )
+                alignment_score = self._calculate_score(ScoreType.ALIGNMENT)
+                coverage_score = self._calculate_score(ScoreType.COVERAGE)
+                self.score_breakdown = {
+                    ScoreType.ALIGNMENT.value: alignment_score,
+                    ScoreType.COVERAGE.value: coverage_score,
+                }
+                self.score = min(alignment_score, coverage_score)
+                self.reason = self._generate_reason()
+                self.success = self.score >= self.threshold
+                self.verbose_logs = construct_verbose_logs(
+                    self,
+                    steps=[
+                        f"Truths (limit={self.truths_extraction_limit}):\n{prettify_list(self.truths)}",
+                        f"Claims:\n{prettify_list(self.claims)}",
+                        f"Assessment Questions:\n{prettify_list(self.assessment_questions)}",
+                        f"Coverage Verdicts:\n{prettify_list(self.coverage_verdicts)}",
+                        f"Alignment Verdicts:\n{prettify_list(self.alignment_verdicts)}",
+                        f"Score: {self.score}\nReason: {self.reason}",
+                    ],
+                )
 
-            self.alignment_verdicts: List[SummarizationAlignmentVerdict] = (
-                self._generate_alignment_verdicts()
+                return self.score
+
+    async def a_measure(
+        self,
+        test_case: Union[LLMTestCase, ConversationalTestCase],
+        _show_indicator: bool = True,
+    ) -> float:
+        if isinstance(test_case, ConversationalTestCase):
+            test_case = test_case.turns[0]
+        check_llm_test_case_params(test_case, required_params, self)
+
+        self.evaluation_cost = 0 if self.using_native_model else None
+        with metric_progress_indicator(
+            self,
+            async_mode=True,
+            _show_indicator=_show_indicator,
+        ):
+            self.truths, self.claims = await asyncio.gather(
+                self._a_generate_truths(test_case.input),
+                self._a_generate_claims(test_case.actual_output),
             )
-            alignment_score = self._generate_score(ScoreType.ALIGNMENT)
-            coverage_score = self._generate_score(ScoreType.COVERAGE)
-
+            (
+                self.coverage_verdicts,
+                self.alignment_verdicts,
+            ) = await asyncio.gather(
+                self._a_generate_coverage_verdicts(test_case),
+                self._a_generate_alignment_verdicts(),
+            )
+            alignment_score = self._calculate_score(ScoreType.ALIGNMENT)
+            coverage_score = self._calculate_score(ScoreType.COVERAGE)
             self.score_breakdown = {
                 ScoreType.ALIGNMENT.value: alignment_score,
                 ScoreType.COVERAGE.value: coverage_score,
             }
-            summarization_score = min(alignment_score, coverage_score)
-            self.reason = self._generate_reason(summarization_score)
-            self.success = summarization_score >= self.threshold
-            self.score = summarization_score
-            capture_metric_type(self.__name__)
+            self.score = min(alignment_score, coverage_score)
+            self.reason = await self._a_generate_reason()
+            self.success = self.score >= self.threshold
+            self.verbose_logs = construct_verbose_logs(
+                self,
+                steps=[
+                    f"Truths (limit={self.truths_extraction_limit}):\n{prettify_list(self.truths)}",
+                    f"Claims:\n{prettify_list(self.claims)}",
+                    f"Assessment Questions:\n{prettify_list(self.assessment_questions)}",
+                    f"Coverage Verdicts:\n{prettify_list(self.coverage_verdicts)}",
+                    f"Alignment Verdicts:\n{prettify_list(self.alignment_verdicts)}",
+                    f"Score: {self.score}\nReason: {self.reason}",
+                ],
+            )
+
             return self.score
 
-    def _generate_reason(self, score: float) -> str:
+    async def _a_generate_reason(self) -> str:
         if self.include_reason is False:
             return None
 
@@ -136,7 +183,7 @@ class SummarizationMetric(BaseMetric):
             contradictions=contradictions,
             redundancies=redundancies,
             questions=questions,
-            score=format(score, ".2f"),
+            score=format(self.score, ".2f"),
         )
 
         if len(questions) > 0:
@@ -144,12 +191,74 @@ class SummarizationMetric(BaseMetric):
 {questions}
 
 """
-        prompt += """Reason:"""
+        prompt += """JSON:
+"""
 
-        res = self.model(prompt)
-        return res
+        if self.using_native_model:
+            res, cost = await self.model.a_generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["reason"]
+        else:
+            try:
+                res: Reason = await self.model.a_generate(prompt, schema=Reason)
+                return res.reason
+            except TypeError:
+                res = await self.model.a_generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["reason"]
 
-    def _generate_score(self, score_type: ScoreType) -> float:
+    def _generate_reason(self) -> str:
+        if self.include_reason is False:
+            return None
+
+        contradictions = []
+        redundancies = []
+        for verdict in self.alignment_verdicts:
+            if verdict.verdict.strip().lower() == "no":
+                contradictions.append(verdict.reason)
+            elif verdict.verdict.strip().lower() == "idk":
+                redundancies.append(verdict.reason)
+
+        questions = []
+        if self.coverage_verdicts:
+            for verdict in self.coverage_verdicts:
+                if (
+                    verdict.original_verdict.strip().lower() == "yes"
+                    and verdict.summary_verdict.strip().lower() == "no"
+                ):
+                    questions.append(verdict.question)
+
+        prompt: dict = SummarizationTemplate.generate_reason(
+            contradictions=contradictions,
+            redundancies=redundancies,
+            questions=questions,
+            score=format(self.score, ".2f"),
+        )
+
+        if len(questions) > 0:
+            prompt += f"""Questions the original text can answer but not the summary:
+{questions}
+
+"""
+        prompt += """JSON:
+"""
+
+        if self.using_native_model:
+            res, cost = self.model.generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["reason"]
+        else:
+            try:
+                res: Reason = self.model.generate(prompt, schema=Reason)
+                return res.reason
+            except TypeError:
+                res = self.model.generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["reason"]
+
+    def _calculate_score(self, score_type: ScoreType) -> float:
         if score_type == ScoreType.ALIGNMENT:
             total = len(self.alignment_verdicts)
             if total == 0:
@@ -161,7 +270,7 @@ class SummarizationMetric(BaseMetric):
                 if verdict.verdict.strip().lower() == "yes":
                     faithfulness_count += 1
 
-            return faithfulness_count / total
+            score = faithfulness_count / total
 
         else:
             if self.assessment_questions is None:
@@ -177,21 +286,111 @@ class SummarizationMetric(BaseMetric):
             if total == 0:
                 return 0
 
-            return coverage_count / total
+            score = coverage_count / total
+
+        return 0 if self.strict_mode and score < self.threshold else score
+
+    async def _a_generate_answers(self, text: str) -> List[str]:
+        prompt = SummarizationTemplate.generate_answers(
+            questions=self.assessment_questions, text=text
+        )
+        if self.using_native_model:
+            res, cost = await self.model.a_generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["answers"]
+        else:
+            try:
+                res: Answers = await self.model.a_generate(
+                    prompt, schema=Answers
+                )
+                return res.answers
+            except TypeError:
+                res = await self.model.a_generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["answers"]
 
     def _generate_answers(self, text: str) -> List[str]:
         prompt = SummarizationTemplate.generate_answers(
             questions=self.assessment_questions, text=text
         )
-        res = self.model(prompt)
-        data = trimAndLoadJson(res)
-        return data["answers"]
+        if self.using_native_model:
+            res, cost = self.model.generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["answers"]
+        else:
+            try:
+                res: Answers = self.model.generate(prompt, schema=Answers)
+                return res.answers
+            except TypeError:
+                res = self.model.generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["answers"]
+
+    async def _a_generate_assessment_questions(self, text: str):
+        prompt = SummarizationTemplate.generate_questions(text=text, n=self.n)
+        if self.using_native_model:
+            res, cost = await self.model.a_generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["questions"]
+        else:
+            try:
+                res: Questions = await self.model.a_generate(
+                    prompt, schema=Questions
+                )
+                return res.questions
+            except TypeError:
+                res = await self.model.a_generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["questions"]
 
     def _generate_assessment_questions(self, text: str):
         prompt = SummarizationTemplate.generate_questions(text=text, n=self.n)
-        res = self.model(prompt)
-        data = trimAndLoadJson(res)
-        return data["questions"]
+        if self.using_native_model:
+            res, cost = self.model.generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["questions"]
+        else:
+            try:
+                res: Questions = self.model.generate(prompt, schema=Questions)
+                return res.questions
+            except TypeError:
+                res = self.model.generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["questions"]
+
+    async def _a_generate_coverage_verdicts(
+        self, test_case: LLMTestCase
+    ) -> List[SummarizationCoverageVerdict]:
+        if self.assessment_questions is None:
+            self.assessment_questions = (
+                await self._a_generate_assessment_questions(test_case.input)
+            )
+
+        tasks = [
+            self._a_generate_answers(test_case.input),
+            self._a_generate_answers(test_case.actual_output),
+        ]
+        results = await asyncio.gather(*tasks)
+        original_answers = results[0]
+        summary_answers = results[1]
+
+        if len(original_answers) != len(summary_answers):
+            raise ValueError("Number of verdicts generated does not equal.")
+
+        coverage_veridcts: List[SummarizationCoverageVerdict] = []
+        for i in range(len(original_answers)):
+            coverage_veridcts.append(
+                SummarizationCoverageVerdict(
+                    summary_verdict=summary_answers[i],
+                    original_verdict=original_answers[i],
+                    question=self.assessment_questions[i],
+                )
+            )
+        return coverage_veridcts
 
     def _generate_coverage_verdicts(
         self, test_case: LLMTestCase
@@ -201,20 +400,8 @@ class SummarizationMetric(BaseMetric):
                 test_case.input
             )
 
-        if self.multithreading:
-            with ThreadPoolExecutor() as executor:
-                future_original_answers: List[str] = executor.submit(
-                    self._generate_answers, test_case.input
-                )
-                future_summary_answers: List[str] = executor.submit(
-                    self._generate_answers, test_case.actual_output
-                )
-                original_answers = future_original_answers.result()
-                summary_answers = future_summary_answers.result()
-
-        else:
-            original_answers = self._generate_answers(test_case.input)
-            summary_answers = self._generate_answers(test_case.actual_output)
+        original_answers = self._generate_answers(test_case.input)
+        summary_answers = self._generate_answers(test_case.actual_output)
 
         if len(original_answers) != len(summary_answers):
             raise ValueError("Number of verdicts generated does not equal.")
@@ -231,31 +418,154 @@ class SummarizationMetric(BaseMetric):
 
         return coverage_veridcts
 
-    def _generate_alignment_verdicts(
+    async def _a_generate_alignment_verdicts(
         self,
     ) -> List[SummarizationAlignmentVerdict]:
+        if len(self.claims) == 0:
+            return []
+
         verdicts: List[SummarizationAlignmentVerdict] = []
         prompt = SummarizationTemplate.generate_alignment_verdicts(
             summary_claims=self.claims, orignal_text="\n\n".join(self.truths)
         )
-        res = self.model(prompt)
-        data = trimAndLoadJson(res)
-        verdicts = [
-            SummarizationAlignmentVerdict(**item) for item in data["verdicts"]
-        ]
+        if self.using_native_model:
+            res, cost = await self.model.a_generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            verdicts = [
+                SummarizationAlignmentVerdict(**item)
+                for item in data["verdicts"]
+            ]
+            return verdicts
+        else:
+            try:
+                res: Verdicts = await self.model.a_generate(
+                    prompt, schema=Verdicts
+                )
+                verdicts = [item for item in res.verdicts]
+                return verdicts
+            except TypeError:
+                res = await self.model.a_generate(prompt)
+                data = trimAndLoadJson(res, self)
+                verdicts = [
+                    SummarizationAlignmentVerdict(**item)
+                    for item in data["verdicts"]
+                ]
+                return verdicts
 
-        return verdicts
+    def _generate_alignment_verdicts(
+        self,
+    ) -> List[SummarizationAlignmentVerdict]:
+        if len(self.claims) == 0:
+            return []
+
+        verdicts: List[SummarizationAlignmentVerdict] = []
+        prompt = SummarizationTemplate.generate_alignment_verdicts(
+            summary_claims=self.claims, orignal_text="\n\n".join(self.truths)
+        )
+        if self.using_native_model:
+            res, cost = self.model.generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            verdicts = [
+                SummarizationAlignmentVerdict(**item)
+                for item in data["verdicts"]
+            ]
+            return verdicts
+        else:
+            try:
+                res: Verdicts = self.model.generate(prompt, schema=Verdicts)
+                verdicts = [item for item in res.verdicts]
+                return verdicts
+            except TypeError:
+                res = self.model.generate(prompt)
+                data = trimAndLoadJson(res, self)
+                verdicts = [
+                    SummarizationAlignmentVerdict(**item)
+                    for item in data["verdicts"]
+                ]
+                return verdicts
+
+    async def _a_generate_truths(self, text: str) -> List[str]:
+        # Borrow faithfulness template
+        prompt = FaithfulnessTemplate.generate_truths(
+            text=text, extraction_limit=self.truths_extraction_limit
+        )
+        if self.using_native_model:
+            res, cost = await self.model.a_generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["truths"]
+        else:
+            try:
+                res: Truths = await self.model.a_generate(prompt, schema=Truths)
+                return res.truths
+            except TypeError:
+                res = await self.model.a_generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["truths"]
+
+    async def _a_generate_claims(self, text: str) -> List[str]:
+        # Borrow faithfulness template
+        prompt = FaithfulnessTemplate.generate_claims(text=text)
+        if self.using_native_model:
+            res, cost = await self.model.a_generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["claims"]
+        else:
+            try:
+                res: Claims = await self.model.a_generate(prompt, schema=Claims)
+                return res.claims
+            except TypeError:
+                res = await self.model.a_generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["claims"]
+
+    def _generate_truths(self, text: str) -> List[str]:
+        # Borrow faithfulness template
+        prompt = FaithfulnessTemplate.generate_truths(
+            text=text, extraction_limit=self.truths_extraction_limit
+        )
+        if self.using_native_model:
+            res, cost = self.model.generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["truths"]
+        else:
+            try:
+                res: Truths = self.model.generate(prompt, schema=Truths)
+                return res.truths
+            except TypeError:
+                res = self.model.generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["truths"]
 
     def _generate_claims(self, text: str) -> List[str]:
         # Borrow faithfulness template
         prompt = FaithfulnessTemplate.generate_claims(text=text)
-        res = self.model(prompt)
-        data = trimAndLoadJson(res)
-
-        return data["claims"]
+        if self.using_native_model:
+            res, cost = self.model.generate(prompt)
+            self.evaluation_cost += cost
+            data = trimAndLoadJson(res, self)
+            return data["claims"]
+        else:
+            try:
+                res: Claims = self.model.generate(prompt, schema=Claims)
+                return res.claims
+            except TypeError:
+                res = self.model.generate(prompt)
+                data = trimAndLoadJson(res, self)
+                return data["claims"]
 
     def is_successful(self) -> bool:
-        self.success = self.score >= self.threshold
+        if self.error is not None:
+            self.success = False
+        else:
+            try:
+                self.success = self.score >= self.threshold
+            except:
+                self.success = False
         return self.success
 
     @property

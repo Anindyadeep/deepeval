@@ -24,7 +24,7 @@ Example:
     ]  
 }}
 
-You should NOT incorporate any prior knowledge you have and take each context at face value. Since you are going to generate a verdict for each context, the number of 'verdicts' SHOULD BE STRICTLY EQUAL to that of contexts.
+You should NOT incorporate any prior knowledge you have and take each context at face value. Since you are going to generate a verdict for each context, the number of 'verdicts' SHOULD BE STRICTLY EQUAL TO {len(contexts)}.
 You should FORGIVE cases where the actual output is lacking in detail, you should ONLY provide a 'no' answer if IT IS A CONTRADICTION.
 **
 
@@ -41,6 +41,14 @@ JSON:
     def generate_reason(factual_alignments, contradictions, score):
         return f"""Given a list of factual alignments and contradictions, which highlights alignment/contradictions between the `actual output` and `contexts, use it to provide a reason for the hallucination score in a CONCISELY. Note that The hallucination score ranges from 0 - 1, and the lower the better.
 
+** 
+IMPORTANT: Please make sure to only return in JSON format, with the 'reason' key providing the reason.
+Example JSON:
+{{
+    "reason": "The score is <hallucination_score> because <your_reason>."
+}}
+**
+
 Factual Alignments:
 {factual_alignments}
 
@@ -50,8 +58,5 @@ Contradictions:
 Hallucination Score:
 {score}
 
-Example:
-The score is <hallucination_score> because <your_reason>.
-
-Reason:
+JSON:
 """

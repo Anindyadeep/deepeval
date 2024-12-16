@@ -1,9 +1,27 @@
+from typing import List
+
+
 class ContextualRelevancyTemplate:
     @staticmethod
-    def generate_reason(input, irrelevant_sentences, score):
-        return f"""Based on the given input, irrelevant sentences (list of JSON), and the contextual relevancy score (the closer to 1 the better), please generate a CONCISE reason for the score.
-Irrelevant Sentences will contain JSONs with two keys: `sentence` and `node`. `sentence` is the actual sentence itself, and `node` is the node number from the `retrieval context` which it was drawn from. Specify that nodes are from retrieval context the first time you mention it.
-In your reason, you should use data in the irrelevant sentences to support your point.
+    def generate_reason(
+        input: str,
+        irrelevancies: List[str],
+        relevant_statements: List[str],
+        score: float,
+    ):
+        return f"""Based on the given input, reasons for why the retrieval context is irrelevant to the input, the statements in the retrieval context that is actually relevant to the retrieval context, and the contextual relevancy score (the closer to 1 the better), please generate a CONCISE reason for the score.
+In your reason, you should quote data provided in the reasons for irrelevancy and relevant statements to support your point.
+
+** 
+IMPORTANT: Please make sure to only return in JSON format, with the 'reason' key providing the reason.
+Example JSON:
+{{
+    "reason": "The score is <contextual_relevancy_score> because <your_reason>."
+}}
+
+If the score is 1, keep it short and say something positive with an upbeat encouraging tone (but don't overdo it otherwise it gets annoying).
+**
+
 
 Contextual Relevancy Score:
 {score}
@@ -11,50 +29,45 @@ Contextual Relevancy Score:
 Input:
 {input}
 
-Irrelevant Sentences:
-{irrelevant_sentences}
+Reasons for why the retrieval context is irrelevant to the input:
+{irrelevancies}
 
-Example:
-The score is <contextual_relevancy_score> because <your_reason>.
+Statement in the retrieval context that is relevant to the input:
+{relevant_statements}
 
-** 
-IMPORTANT:
-If the score is 1, keep it short and say something positive with an upbeat encouraging tone (but don't overdo it otherwise it gets annoying).
-**
-
-Reason:
+JSON:
 """
 
     @staticmethod
-    def generate_verdicts(text, context):
-        return f"""Based on the input and context, please generate a list of JSON objects to indicate whether each given sentence in the context relevant to the provided input. The JSON will have 1 mandatory field: 'verdict', and 1 optional field: 'sentence'.
-The 'verdict' key should STRICTLY be either 'yes' or 'no', and states whether the sentence is relevant to the text. 
-Copy the sentence and supply the value to the 'sentence' key ONLY IF verdict is no.
+    def generate_verdicts(input: str, context: str):
+        return f"""Based on the input and context, please generate a JSON object to indicate whether each statement found in the context is relevant to the provided input. The JSON will be a list of 'verdicts', with 2 mandatory fields: 'verdict' and 'statement', and 1 optional field: 'reason'.
+You should first extract statements found in the context, which are high level information found in the context, before deciding on a verdict and optionally a reason for each statement.
+The 'verdict' key should STRICTLY be either 'yes' or 'no', and states whether the statement is relevant to the input.
+Provide a 'reason' ONLY IF verdict is no. You MUST quote the irrelevant parts of the statement to back up your reason.
 
 **
-IMPORTANT: Please make sure to only return in JSON format, with the 'verdicts' key as a list of JSON objects.
+IMPORTANT: Please make sure to only return in JSON format.
 Example Context: "Einstein won the Nobel Prize for his discovery of the photoelectric effect. He won the Nobel Prize in 1968. There was a cat."
-Example Input: "Einstein won the Nobel Prize in 1969 for his discovery of the photoelectric effect."
+Example Input: "What were some of Einstein's achievements?"
 
 Example:
 {{
     "verdicts": [
         {{
-            "verdict": "yes"
-        }},
-        {{
-            "verdict": "yes"
+            "verdict": "yes",
+            "statement": "Einstein won the Nobel Prize for his discovery of the photoelectric effect in 1968",
         }},
         {{
             "verdict": "no",
-            "sentence": "There was a cat"
+            "statement": "There was a cat.",
+            "reason": "The retrieval context contained the information 'There was a cat' when it has nothing to do with Einstein's achievements."
         }}
-    ]  
+    ]
 }}
 **
 
 Input:
-{text}
+{input}
 
 Context:
 {context}

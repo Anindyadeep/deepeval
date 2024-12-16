@@ -4,19 +4,29 @@ import re
 # Optionally add telemtry
 from ._version import __version__
 
-from .decorators.hyperparameters import set_hyperparameters
 from deepeval.event import track
-from deepeval.evaluate import evaluate, run_test, assert_test
-from deepeval.test_run import on_test_run_end
+from deepeval.monitor import monitor, a_monitor, send_feedback, a_send_feedback
+from deepeval.evaluate import evaluate, assert_test
+from deepeval.test_run import on_test_run_end, log_hyperparameters
+from deepeval.utils import login_with_confident_api_key
 from deepeval.telemetry import *
+from deepeval.integrations import trace_langchain, trace_llama_index
+from deepeval.confident import confident_evaluate
 
 __all__ = [
-    "set_hyperparameters",
+    "login_with_confident_api_key",
+    "log_hyperparameters",
     "track",
+    "monitor",
+    "a_monitor",
+    "a_send_feedback",
+    "send_feedback",
     "evaluate",
-    "run_test",
     "assert_test",
     "on_test_run_end",
+    "trace_langchain",
+    "trace_llama_index",
+    "confident_evaluate",
 ]
 
 

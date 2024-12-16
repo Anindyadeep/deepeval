@@ -32,6 +32,7 @@ module.exports = async function createConfigAsync() {
       locales: ['en'],
     },
     plugins: [
+      'docusaurus-plugin-sass',
       [
         "posthog-docusaurus",
         {
@@ -56,7 +57,7 @@ module.exports = async function createConfigAsync() {
             rehypePlugins: [rehypeKatexModule],
           },
           theme: {
-            customCss: require.resolve('./src/css/custom.css'),
+            customCss: require.resolve('./src/css/custom.scss'),
           },
           gtag: {
             trackingID: 'G-N2EGDDYG9M',
@@ -64,6 +65,13 @@ module.exports = async function createConfigAsync() {
           },
         },
       ],
+    ],
+    scripts:[          
+      {
+        src: 'https://plausible.io/js/script.tagged-events.js',
+        defer: true,
+        'data-domain': 'confident-ai.com',
+      }
     ],
     stylesheets: [
       {
@@ -73,16 +81,19 @@ module.exports = async function createConfigAsync() {
           'sha384-odtC+0UGzzFL/6PNoE8rX/SPcQDXBJ+uRepguP4QkPCm2LBxH3FA3y+fKSiJ+AmM',
         crossorigin: 'anonymous',
       },
+      {
+        href: 'https://fonts.googleapis.com/css2?family=Lexend+Deca:wght@500&display=swap',
+        type: 'text/css',
+      },
     ],
     themeConfig:
       /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
       ({
-        // TODO: make this an actual social card
-        // image: 'img/docusaurus-social-card.jpeg',
+        image: 'img/social_card.png',
         navbar: {
           logo: {
             alt: 'DeepEval Logo',
-            src: 'icons/DeepEval..svg',
+            src: 'icons/DeepEval.svg',
           },
           items: [
             {
@@ -90,15 +101,20 @@ module.exports = async function createConfigAsync() {
               position: 'left',
               label: 'Docs',
             },
-            // {
-            //   to: "docs/tutorial",
-            //   position: 'left',
-            //   label: 'Tutorials',
-            // },
+            {
+              to: "docs/tutorial-introduction",
+              position: 'left',
+              label: 'Tutorial',
+            },
             {
               href: "https://confident-ai.com/blog",
               position: 'left',
               label: 'Blog',
+            },
+            {
+              href: 'https://confident-ai.com',
+              className: 'header-confident-link',
+              position: 'right',
             },
             {
               href: 'https://discord.gg/a3K9c8GRGt',
@@ -139,10 +155,10 @@ module.exports = async function createConfigAsync() {
                   label: 'Introduction',
                   to: '/docs/getting-started',
                 },
-                // {
-                //   label: 'Tutorial',
-                //   to: '/docs/intro',
-                // },
+                {
+                  label: 'Tutorial',
+                  to: '/docs/tutorial-introduction',
+                },
               ],
             },
             {
@@ -183,15 +199,7 @@ module.exports = async function createConfigAsync() {
               block: {start: 'highlight-info-start', end: 'highlight-info-end'},
             },
           ],
-        },      
-        scripts: [
-          {
-            src: 'https://cdn.getkoala.com/v1/pk_c2f9444e23cd5fd7c2b34105b24d241bfdad/sdk.js',
-            async: true,
-            'data-cfasync': 'false',
-            defer: true,
-          },
-        ],
+        },
       }),
   };  
 };

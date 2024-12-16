@@ -1,12 +1,14 @@
 import pytest
 from deepeval import assert_test
+from deepeval.metrics.summarization.schema import Verdicts
 from deepeval.test_case import LLMTestCase
 from deepeval.metrics import SummarizationMetric
+from tests.custom_judge import CustomJudge
 
 
-@pytest.mark.skip(reason="openai is expensive")
+@pytest.mark.skip(reason="openai isg expensive")
 def test_summarization():
-    metric = SummarizationMetric(multithreading=False)
+    metric = SummarizationMetric(verbose_mode=True, truths_extraction_limit=2)
 
     input = """
     In the rapidly evolving digital landscape, the proliferation of artificial intelligence (AI) technologies has been a game-changer in various industries, ranging from healthcare to finance. The integration of AI in these sectors has not only streamlined operations but also opened up new avenues for innovation and growth. In healthcare, AI algorithms are increasingly being used for diagnostic purposes, analyzing medical images, and providing personalized medicine solutions. This has significantly improved patient outcomes and has the potential to revolutionize healthcare delivery systems globally. For example, AI-driven tools can now detect anomalies in medical images with greater accuracy and speed than traditional methods, aiding in early diagnosis and treatment of diseases like cancer.
@@ -27,3 +29,14 @@ def test_summarization():
     test_case = LLMTestCase(input=input, actual_output=output)
 
     assert_test(test_case, [metric])
+
+
+def test_verdict_schema():
+
+    judge = CustomJudge("mock")
+    schema = Verdicts
+    answer = (
+        '{\n"verdicts": [\n{\n"verdict": "yes"\n},\n{\n    "verdict": "no",\n    "reason": "blah blah"\n},'
+        '\n{\n    "verdict": "yes",\n    "reason":null \n}\n]\n}'
+    )
+    res: Verdicts = judge.generate(answer, schema=schema)

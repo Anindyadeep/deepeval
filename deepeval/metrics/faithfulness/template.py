@@ -1,7 +1,10 @@
+from typing import Optional
+
+
 class FaithfulnessTemplate:
     @staticmethod
     def generate_claims(text):
-        return f"""Based on the given text, please generate a comphrensive list of FACTUAL claims that can inferred from the provided text.
+        return f"""Based on the given text, please generate a comprehensive list of FACTUAL, undisputed truths, that can inferred from the provided text.
 
 Example:
 Example Text: 
@@ -17,7 +20,7 @@ Example JSON:
 ===== END OF EXAMPLE ======
 
 **
-IMPORTANT: Please make sure to only return in JSON format, with the "claims" key as a list of strings. No words or explaination is needed.
+IMPORTANT: Please make sure to only return in JSON format, with the "claims" key as a list of strings. No words or explanation is needed.
 Only include claims that are factual, and the claims you extract should include the full context it was presented in, NOT cherry picked facts.
 You should NOT include any prior knowledge, and take the text at face value when extracting claims.
 **
@@ -29,8 +32,14 @@ JSON:
 """
 
     @staticmethod
-    def generate_truths(text):
-        return f"""Based on the given text, please generate a comphrensive list of FACTUAL, undisputed truths that can inferred from the provided text.
+    def generate_truths(text, extraction_limit: Optional[int] = None):
+        if extraction_limit is None:
+            limit = " FACTUAL, undisputed truths"
+        elif extraction_limit == 1:
+            limit = " the single most important FACTUAL, undisputed truth"
+        else:
+            limit = f" the {extraction_limit} most important FACTUAL, undisputed truths per document"
+        return f"""Based on the given text, please generate a comprehensive list of{limit}, that can inferred from the provided text.
 
 Example:
 Example Text: 
@@ -46,7 +55,7 @@ Example JSON:
 ===== END OF EXAMPLE ======
 
 **
-IMPORTANT: Please make sure to only return in JSON format, with the "truths" key as a list of strings. No words or explaination is needed.
+IMPORTANT: Please make sure to only return in JSON format, with the "truths" key as a list of strings. No words or explanation is needed.
 Only include truths that are factual.
 **
 
@@ -113,21 +122,23 @@ JSON:
         return f"""Below is a list of Contradictions. It is a list of strings explaining why the 'actual output' does not align with the information presented in the 'retrieval context'. Contradictions happen in the 'actual output', NOT the 'retrieval context'.
 Given the faithfulness score, which is a 0-1 score indicating how faithful the `actual output` is to the retrieval context (higher the better), CONCISELY summarize the contradictions to justify the score. 
 
+** 
+IMPORTANT: Please make sure to only return in JSON format, with the 'reason' key providing the reason.
+Example JSON:
+{{
+    "reason": "The score is <faithfulness_score> because <your_reason>."
+}}
+
+If there are no contradictions, just say something positive with an upbeat encouraging tone (but don't overdo it otherwise it gets annoying).
+Your reason MUST use information in `contradiction` in your reason.
+Be sure in your reason, as if you know what the actual output is from the contradictions.
+**
+
 Faithfulness Score:
 {score}
 
 Contradictions:
 {contradictions}
 
-Example:
-The score is <faithfulness_score> because <your_reason>.
-
-**
-IMPORTANT: 
-If there are no contradictions, just say something positive with an upbeat encouraging tone (but don't overdo it otherwise it gets annoying).
-Your reason MUST use information in `contradiction` in your reason.
-Be sure in your reason, as if you know what the actual output is from the contradictions.
-**
-
-Reason:
+JSON:
 """

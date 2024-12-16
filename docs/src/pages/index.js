@@ -8,7 +8,7 @@ class HomeNav extends React.Component {
     render() {
         return <div className={styles.homeNav}>
             <div><Link to={"/docs/getting-started"}>Docs</Link></div>
-            {/* <div><Link to="/docs/tutorial-setup">Tutorial</Link></div> */}
+            <div><Link to="/docs/tutorial-introduction">Tutorial</Link></div>
             <div><a href="https://github.com/confident-ai/deepeval" target="_blank">Github</a></div>
             <div><a href="https://confident-ai.com/blog" target="_blank">Blog</a></div>
         </div>
@@ -29,8 +29,7 @@ class ConfidentEnvelope extends React.Component {
           <div className={styles.letterBorder}></div>
           <div className={styles.letterTitle}>Delivered by</div>
           <div className={styles.letterContext}>
-            {/* <img src="icons/bowtie.svg"/> */}
-            <span>Confident AI</span>
+            <span class="lexend-deca" style={{fontSize: "16px"}}>Confident AI</span>
           </div>
           <div className={styles.letterStamp}>
             <div className={styles.letterStampInner}></div>
@@ -77,9 +76,9 @@ class Index extends React.Component {
         <div className={styles.mainMainContainer}>
           <div className={styles.mainContainer}>
             <div className={styles.mainLeftContainer}>
-              <img src="icons/DeepEval..svg" />
+              <img src="icons/DeepEval.svg" />
               <div className={styles.contentContainer}>
-                <h1>$ the open-source evaluation framework for LLMs</h1>
+                <h1>$ the open-source LLM evaluation framework</h1>
                 <Link to={"/docs/getting-started"} className={styles.button}>Get Started</Link>
               </div>
             </div>
@@ -87,19 +86,19 @@ class Index extends React.Component {
           </div>
           <div className={styles.featuresContainer}>
             <FeatureCard 
-                title="Regression Testing in Python" 
+                title="Regression Testing for LLMs" 
                 link="/docs/evaluation-test-cases" 
-                description="Simple functions to unit test LLM applications in the CLI"
+                description="LLM evaluation metrics to unit test LLM outputs in Python"
             />
             <FeatureCard 
-                title="Built in Observability" 
+                title="Prompt and Model Discovery"
                 link="/docs/getting-started#visualize-your-results" 
-                description="Gain insights to quickly iterate towards optimal hyperparameters"
+                description="Gain insights to quickly iterate towards optimal prompts and model"
             />
             <FeatureCard 
-                title="Integrate with Popular Frameworks" 
-                link="/docs/integrations-introduction" 
-                description="Evaluate existing LLM applications built with other frameworks"
+                title="LLM Red Teaming" 
+                link="/docs/red-teaming-introduction" 
+                description="Security and safety test LLM applications for vulnerabilities"
             />
           </div>
         </div>
